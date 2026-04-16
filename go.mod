@@ -1,4 +1,4 @@
-module github.com/billiegoose/cli
+module github.com/billiegoose/please
 
 go 1.24.2
 

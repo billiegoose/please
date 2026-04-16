@@ -9,6 +9,11 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		runPlease(os.Args[1:])
+		return
+	}
+
 	client := anthropic.NewClient() // reads ANTHROPIC_API_KEY from env
 
 	p := tea.NewProgram(

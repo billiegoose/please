@@ -21,7 +21,7 @@ var (
 	promptStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("99")).Bold(true)
 	inputStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 	errorStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	cursorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("99")).Bold(true)
+	cursorStyle      = lipgloss.NewStyle().Reverse(true)
 )
 
 // --- messages ---

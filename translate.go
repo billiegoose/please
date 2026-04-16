@@ -12,19 +12,22 @@ import (
 type Suggestion struct {
 	Cmd         string `json:"cmd"`
 	Explanation string `json:"explanation"`
+	Interactive bool   `json:"interactive"`
 }
 
-var systemPrompt = `You are a CLI command translator. Given English input, return 1-3 CLI command interpretations as a JSON array.
+var systemPrompt = `You are a CLI command translator. Given English input, return a JSON array of CLI command interpretations.
 
 Rules:
-- Each item has "cmd" (the shell command) and "explanation" (terse, ≤10 words)
+- Each item has "cmd" (the shell command), "explanation" (terse, ≤10 words), and "interactive" (bool — true if the command opens an interactive UI, editor, pager, or requires user input, e.g. vim, git commit, ssh, less, top)
 - Return only the JSON array, no other text
-- Order by most likely interpretation first
 - If input is empty or nonsensical, return []
+- ONLY return multiple options if the request is genuinely ambiguous — i.e. different interpretations of intent would produce meaningfully different outcomes. Do NOT return multiple options just because there are several commands that achieve the same result. When in doubt, return one option.
+- Good reason for multiple options: "delete old folders" → one option uses mtime, another uses ctime — genuinely different files could be affected
+- Bad reason for multiple options: offering "find -delete" vs "find -exec rm -rf" when both delete the same files
 
 Example:
 Input: "list all files including hidden ones"
-Output: [{"cmd":"ls -la","explanation":"list all files with details"},{"cmd":"ls -A","explanation":"list all files, no . and .."}]`
+Output: [{"cmd":"ls -la","explanation":"list all files with details","interactive":false}]`
 
 func translate(ctx context.Context, client *anthropic.Client, input string) ([]Suggestion, error) {
 	if input == "" {

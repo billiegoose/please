@@ -6,9 +6,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/anthropics/anthropic-sdk-go"
 )
 
 // --- styles ---
@@ -19,7 +21,6 @@ var (
 	selectedCmdStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Bold(true)
 	explanStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	promptStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("99")).Bold(true)
-	inputStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 	errorStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	cursorStyle      = lipgloss.NewStyle().Reverse(true)
 )
@@ -46,24 +47,34 @@ type model struct {
 	client      *anthropic.Client
 	width       int
 	height      int
-	input       string
+	ti          textinput.Model
 	suggestions []Suggestion
 	selected    int
 	translating bool
-	output      []string // scrollback history
-	lastInput   string   // input that produced current suggestions
+	spinner     spinner.Model
+	output      []string
+	lastInput   string
 	lastErr     string
 }
 
 func newModel(client *anthropic.Client) model {
-	return model{client: client}
+	ti := textinput.New()
+	ti.Prompt = promptStyle.Render("> ")
+	ti.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+	ti.Cursor.Style = cursorStyle
+	ti.Focus()
+
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = explanStyle
+
+	return model{client: client, ti: ti, spinner: sp}
 }
 
 func (m model) Init() tea.Cmd {
-	return nil
+	return tea.Batch(textinput.Blink, m.spinner.Tick)
 }
 
-// debounce: fire translation after 300ms of no typing
 func debounceTranslate(input string) tea.Cmd {
 	return tea.Tick(300*time.Millisecond, func(_ time.Time) tea.Msg {
 		return debounceTickMsg{input: input}
@@ -90,6 +101,8 @@ func runCommand(cmdStr string) tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
@@ -103,12 +116,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case tea.KeyEnter:
-			if len(m.suggestions) == 0 || m.input == "" {
+			if len(m.suggestions) == 0 || m.ti.Value() == "" {
 				return m, nil
 			}
 			cmdStr := m.suggestions[m.selected].Cmd
 			m.output = append(m.output, promptStyle.Render("$ ")+cmdStyle.Render(cmdStr))
-			m.input = ""
+			m.ti.SetValue("")
 			m.suggestions = nil
 			m.selected = 0
 			m.lastInput = ""
@@ -126,38 +139,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selected++
 			}
 			return m, nil
-
-		case tea.KeyBackspace, tea.KeyDelete:
-			if len(m.input) > 0 {
-				m.input = m.input[:len(m.input)-1]
-				m.lastErr = ""
-				return m, debounceTranslate(m.input)
-			}
-			return m, nil
-
-		case tea.KeySpace:
-			m.input += " "
-			m.lastErr = ""
-			return m, debounceTranslate(m.input)
-
-		case tea.KeyRunes:
-			m.input += string(msg.Runes)
-			m.lastErr = ""
-			return m, debounceTranslate(m.input)
 		}
 
+		prev := m.ti.Value()
+		var tiCmd tea.Cmd
+		m.ti, tiCmd = m.ti.Update(msg)
+		cmds = append(cmds, tiCmd)
+		if m.ti.Value() != prev {
+			m.lastErr = ""
+			cmds = append(cmds, debounceTranslate(m.ti.Value()))
+		}
+		return m, tea.Batch(cmds...)
+
 	case debounceTickMsg:
-		// Only fire if input hasn't changed since the tick was scheduled
-		if msg.input == m.input && m.input != "" {
+		if msg.input == m.ti.Value() && m.ti.Value() != "" {
 			m.translating = true
-			return m, doTranslate(m.client, m.input)
+			return m, doTranslate(m.client, m.ti.Value())
 		}
 		return m, nil
 
 	case translationResultMsg:
 		m.translating = false
-		if msg.input != m.input {
-			// stale result, ignore
+		if msg.input != m.ti.Value() {
 			return m, nil
 		}
 		if msg.err != nil {
@@ -179,9 +182,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.output = append(m.output, errorStyle.Render("exit: "+msg.err.Error()))
 		}
 		return m, nil
+
+	case spinner.TickMsg:
+		var spCmd tea.Cmd
+		m.spinner, spCmd = m.spinner.Update(msg)
+		return m, spCmd
 	}
 
-	return m, nil
+	var tiCmd tea.Cmd
+	m.ti, tiCmd = m.ti.Update(msg)
+	cmds = append(cmds, tiCmd)
+	return m, tea.Batch(cmds...)
 }
 
 func (m model) View() string {
@@ -196,7 +207,7 @@ func (m model) View() string {
 	if m.lastErr != "" {
 		translationArea = errorStyle.Render("error: "+m.lastErr) + "\n"
 	} else if m.translating {
-		translationArea = explanStyle.Render("…") + "\n"
+		translationArea = m.spinner.View() + explanStyle.Render(" translating…") + "\n"
 	} else if len(m.suggestions) == 1 {
 		s := m.suggestions[0]
 		translationArea = promptStyle.Render("$ ") + cmdStyle.Render(s.Cmd) + "\n"
@@ -214,23 +225,19 @@ func (m model) View() string {
 			lines = append(lines, prefix+cmdRendered+"  "+explanStyle.Render("("+s.Explanation+")"))
 		}
 		translationArea = strings.Join(lines, "\n") + "\n"
-	} else if m.input != "" {
+	} else if m.ti.Value() != "" {
 		translationArea = explanStyle.Render("…") + "\n"
 	}
 
 	// --- output history ---
-	// Calculate how many lines we have for output
 	translationLines := strings.Count(translationArea, "\n")
-	inputLine := 1
-	dividerLine := 1
-	reserved := translationLines + inputLine + dividerLine + 1
+	reserved := translationLines + 1 /* input */ + 1 /* divider */ + 1
 
 	outputLines := m.height - reserved
 	if outputLines < 0 {
 		outputLines = 0
 	}
 
-	// flatten and trim output history to fit
 	var allOutputLines []string
 	for _, block := range m.output {
 		for _, line := range strings.Split(block, "\n") {
@@ -240,8 +247,6 @@ func (m model) View() string {
 	if len(allOutputLines) > outputLines {
 		allOutputLines = allOutputLines[len(allOutputLines)-outputLines:]
 	}
-
-	// pad output area to fill space
 	for len(allOutputLines) < outputLines {
 		allOutputLines = append([]string{""}, allOutputLines...)
 	}
@@ -250,14 +255,9 @@ func (m model) View() string {
 		sb.WriteString(outputStyle.Render(line) + "\n")
 	}
 
-	// divider
 	sb.WriteString(dividerStyle.Render(strings.Repeat("─", m.width)) + "\n")
-
-	// translation
 	sb.WriteString(translationArea)
-
-	// input line with blinking cursor simulation
-	sb.WriteString(promptStyle.Render("> ") + inputStyle.Render(m.input) + cursorStyle.Render("█"))
+	sb.WriteString(m.ti.View())
 
 	return sb.String()
 }

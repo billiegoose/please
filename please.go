@@ -7,67 +7,64 @@ import (
 	"strings"
 	"syscall"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
-// pickerModel is a minimal TUI: show suggestions, pick one, optionally edit, exec it.
 type pickerModel struct {
 	suggestions []Suggestion
 	selected    int
 	ready       bool
 	input       string
-
-	// edit mode
 	editing     bool
-	editBuf     string
-	editCursor  int
+	ti          textinput.Model
+	spinner     spinner.Model
+	loading     bool
+	err         string
+}
+
+func newPickerModel(input string) pickerModel {
+	ti := textinput.New()
+	ti.Cursor.Style = cursorStyle
+	ti.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Bold(true)
+
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = explanStyle
+
+	return pickerModel{input: input, ti: ti, spinner: sp, loading: true}
 }
 
 func (m pickerModel) Init() tea.Cmd {
-	return nil
+	return tea.Batch(m.spinner.Tick, textinput.Blink)
 }
 
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.loading {
+			if msg.Type == tea.KeyCtrlC {
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		if m.editing {
 			switch msg.Type {
 			case tea.KeyCtrlC:
 				return m, tea.Quit
 			case tea.KeyEsc:
-				// back to picker
 				m.editing = false
+				m.ti.Blur()
 			case tea.KeyEnter:
 				m.ready = true
 				return m, tea.Quit
-			case tea.KeyLeft:
-				if m.editCursor > 0 {
-					m.editCursor--
-				}
-			case tea.KeyRight:
-				if m.editCursor < len(m.editBuf) {
-					m.editCursor++
-				}
-			case tea.KeyHome, tea.KeyCtrlA:
-				m.editCursor = 0
-			case tea.KeyEnd, tea.KeyCtrlE:
-				m.editCursor = len(m.editBuf)
-			case tea.KeyBackspace:
-				if m.editCursor > 0 {
-					m.editBuf = m.editBuf[:m.editCursor-1] + m.editBuf[m.editCursor:]
-					m.editCursor--
-				}
-			case tea.KeyDelete:
-				if m.editCursor < len(m.editBuf) {
-					m.editBuf = m.editBuf[:m.editCursor] + m.editBuf[m.editCursor+1:]
-				}
-			case tea.KeySpace:
-				m.editBuf = m.editBuf[:m.editCursor] + " " + m.editBuf[m.editCursor:]
-				m.editCursor++
-			case tea.KeyRunes:
-				m.editBuf = m.editBuf[:m.editCursor] + string(msg.Runes) + m.editBuf[m.editCursor:]
-				m.editCursor += len(msg.Runes)
+			default:
+				var tiCmd tea.Cmd
+				m.ti, tiCmd = m.ti.Update(msg)
+				return m, tiCmd
 			}
 		} else {
 			switch msg.Type {
@@ -85,54 +82,58 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selected++
 				}
 			case tea.KeyRunes:
-				if string(msg.Runes) == "e" {
+				if string(msg.Runes) == "e" && len(m.suggestions) > 0 {
 					m.editing = true
-					m.editBuf = m.suggestions[m.selected].Cmd
-					m.editCursor = len(m.editBuf)
+					m.ti.SetValue(m.suggestions[m.selected].Cmd)
+					m.ti.SetCursor(len(m.ti.Value()))
+					m.ti.Focus()
 				}
 			}
 		}
+
+	case translationResultMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.err = msg.err.Error()
+		} else {
+			m.suggestions = msg.suggestions
+		}
+		return m, nil
+
+	case spinner.TickMsg:
+		var spCmd tea.Cmd
+		m.spinner, spCmd = m.spinner.Update(msg)
+		return m, spCmd
 	}
 	return m, nil
 }
 
 func (m pickerModel) View() string {
-	// When ready, force editing=false so we render the plain selected command without a cursor
-	if m.ready {
-		m.editing = false
-	}
 	var sb strings.Builder
 	sb.WriteString(explanStyle.Render("  "+m.input) + "\n\n")
 
+	if m.loading {
+		sb.WriteString("  " + m.spinner.View() + explanStyle.Render(" translating…") + "\n")
+		return sb.String()
+	}
+
+	if m.err != "" {
+		sb.WriteString(errorStyle.Render("  error: "+m.err) + "\n")
+		return sb.String()
+	}
+
 	for i, s := range m.suggestions {
-		prefix := "  "
-		var line string
 		if i == m.selected {
 			if m.editing {
-				// render the editable buffer with a cursor
-				before := m.editBuf[:m.editCursor]
-				var cursorChar string
-				if m.editCursor < len(m.editBuf) {
-					cursorChar = string(m.editBuf[m.editCursor])
-				} else {
-					cursorChar = " "
-				}
-				after := ""
-				if m.editCursor < len(m.editBuf) {
-					after = m.editBuf[m.editCursor+1:]
-				}
-				editLine := selectedCmdStyle.Render("$ "+before) +
-					cursorStyle.Render(cursorChar) +
-					selectedCmdStyle.Render(after)
-				line = editLine
+				sb.WriteString(promptStyle.Render("▶ ") + "$ " + m.ti.View() + "\n")
 			} else {
-				prefix = promptStyle.Render("▶ ")
-				line = selectedCmdStyle.Render("$ "+s.Cmd) + "  " + explanStyle.Render("("+s.Explanation+")")
+				line := selectedCmdStyle.Render("$ "+s.Cmd) + "  " + explanStyle.Render("("+s.Explanation+")")
+				sb.WriteString(promptStyle.Render("▶ ") + line + "\n")
 			}
 		} else {
-			line = dividerStyle.Render("$ ") + cmdStyle.Render(s.Cmd) + "  " + explanStyle.Render("("+s.Explanation+")")
+			line := dividerStyle.Render("$ ") + cmdStyle.Render(s.Cmd) + "  " + explanStyle.Render("("+s.Explanation+")")
+			sb.WriteString("  " + line + "\n")
 		}
-		sb.WriteString(prefix + line + "\n")
 	}
 
 	if !m.ready {
@@ -148,45 +149,55 @@ func (m pickerModel) View() string {
 
 func runPlease(args []string) {
 	input := strings.Join(args, " ")
-
 	client := anthropic.NewClient()
 
-	fmt.Print(explanStyle.Render("translating…"))
+	// Start picker in loading state; kick off translation as first Cmd
+	m := newPickerModel(input)
 
-	suggestions, err := translate(context.Background(), &client, input)
-
-	// clear the "translating…" line
-	fmt.Print("\r\033[K")
-
-	if err != nil {
-		fmt.Fprintln(os.Stderr, errorStyle.Render("error: "+err.Error()))
-		os.Exit(1)
-	}
-	if len(suggestions) == 0 {
-		fmt.Fprintln(os.Stderr, errorStyle.Render("no suggestions"))
-		os.Exit(1)
+	translateCmd := func() tea.Msg {
+		suggestions, err := translate(context.Background(), &client, input)
+		return translationResultMsg{input: input, suggestions: suggestions, err: err}
 	}
 
-	p := tea.NewProgram(pickerModel{suggestions: suggestions, input: input})
-	result, err := p.Run()
+	p2 := tea.NewProgram(pickerRunner{inner: m, translateCmd: translateCmd})
+	result, err := p2.Run()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, errorStyle.Render("error: "+err.Error()))
 		os.Exit(1)
 	}
 
-	pm := result.(pickerModel)
+	pm := result.(pickerRunner).inner
 	if !pm.ready {
-		// user cancelled
 		os.Exit(0)
 	}
 
 	var chosen Suggestion
 	if pm.editing {
-		chosen = Suggestion{Cmd: pm.editBuf, Interactive: pm.suggestions[pm.selected].Interactive}
+		chosen = Suggestion{Cmd: pm.ti.Value(), Interactive: pm.suggestions[pm.selected].Interactive}
 	} else {
 		chosen = pm.suggestions[pm.selected]
 	}
 	execCmd(chosen)
+}
+
+// pickerRunner wraps pickerModel so we can inject an initial Cmd.
+type pickerRunner struct {
+	inner        pickerModel
+	translateCmd tea.Cmd
+}
+
+func (r pickerRunner) Init() tea.Cmd {
+	return tea.Batch(r.inner.Init(), r.translateCmd)
+}
+
+func (r pickerRunner) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	inner, cmd := r.inner.Update(msg)
+	r.inner = inner.(pickerModel)
+	return r, cmd
+}
+
+func (r pickerRunner) View() string {
+	return r.inner.View()
 }
 
 func execCmd(s Suggestion) {
@@ -195,8 +206,7 @@ func execCmd(s Suggestion) {
 		fmt.Fprintln(os.Stderr, errorStyle.Render("cannot find bash: "+err.Error()))
 		os.Exit(1)
 	}
-	args := []string{"bash", "-c", s.Cmd}
-	if err := syscall.Exec(bash, args, os.Environ()); err != nil {
+	if err := syscall.Exec(bash, []string{"bash", "-c", s.Cmd}, os.Environ()); err != nil {
 		fmt.Fprintln(os.Stderr, errorStyle.Render("exec failed: "+err.Error()))
 		os.Exit(1)
 	}

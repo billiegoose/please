@@ -25,17 +25,17 @@ Type English at the bottom prompt. The translated command appears above as you t
 In one-shot mode, a picker appears after translation:
 
 ```
-  please copy my ssh key to the clipboard
+  copy my ssh key to the clipboard
 
-▶ $ cat ~/.ssh/id_rsa.pub | pbcopy  (copy public key to clipboard)
-  $ pbcopy < ~/.ssh/id_rsa.pub  (alternative pbcopy syntax)
+▶ $ cat ~/.ssh/id_rsa.pub | pbcopy  (copy public SSH key to clipboard (macOS))
+  $ cat ~/.ssh/id_rsa.pub | xclip -selection clipboard  (copy public SSH key to clipboard (Linux))
 
 ↑↓ select · enter run · e edit · esc cancel
 ```
 
-- `↑↓` — select between options (only shown when the request is genuinely ambiguous)
+- `↑↓` — select between options (only shown when different interpretations would produce meaningfully different outcomes)
 - `Enter` — run selected command
-- `e` — edit the command before running (supports `←→`, `Ctrl+A`/`Ctrl+E`, backspace)
+- `e` — edit the command before running
 - `Esc` — cancel
 
 ## Shell integration
@@ -46,12 +46,23 @@ Add to your `.bashrc` or `.zshrc`:
 export PATH="$PATH:/path/to/please"
 ```
 
+## Configuration
+
+On first run, `please` will prompt for your Anthropic API key and save it to `~/.config/please/config`. Run `please --setup` at any time to change or rotate the key.
+
+Set `ANTHROPIC_API_KEY` as an environment variable to override the config file (useful for CI/servers).
+
 ## Requirements
 
-- `ANTHROPIC_API_KEY` environment variable set
 - `bash` available at `/bin/bash`
 
-## Building
+## Install
+
+```
+go install github.com/billiegoose/please@latest
+```
+
+## Building from source
 
 ```
 go build

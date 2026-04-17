@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 const version = "0.1.0"
@@ -15,6 +16,7 @@ const helpText = `please — natural language shell command translator
 USAGE
   please                    open interactive TUI mode
   please <description>      translate and run a one-shot command
+  please --setup            configure API key
   please --help             show this help
   please --version          show version
 
@@ -29,8 +31,9 @@ PICKER KEYS
   e       edit command before running
   esc     cancel
 
-ENVIRONMENT
-  ANTHROPIC_API_KEY   required
+CONFIGURATION
+  API key is stored in ~/.config/please/config
+  Set ANTHROPIC_API_KEY env var to override
 `
 
 func main() {
@@ -42,12 +45,20 @@ func main() {
 		case "--version", "-v":
 			fmt.Println("please " + version)
 			return
+		case "--setup":
+			runSetup()
+			return
 		}
 		runPlease(os.Args[1:])
 		return
 	}
 
-	client := anthropic.NewClient() // reads ANTHROPIC_API_KEY from env
+	key, err := resolveAPIKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	client := anthropic.NewClient(option.WithAPIKey(key))
 
 	p := tea.NewProgram(
 		newModel(&client),

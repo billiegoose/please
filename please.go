@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -149,7 +150,12 @@ func (m pickerModel) View() string {
 
 func runPlease(args []string) {
 	input := strings.Join(args, " ")
-	client := anthropic.NewClient()
+	key, err := resolveAPIKey()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, errorStyle.Render("error: "+err.Error()))
+		os.Exit(1)
+	}
+	client := anthropic.NewClient(option.WithAPIKey(key))
 
 	// Start picker in loading state; kick off translation as first Cmd
 	m := newPickerModel(input)
